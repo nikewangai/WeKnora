@@ -807,6 +807,8 @@ export default {
     proxyUrlPlaceholder: 'Напр. http://127.0.0.1:7890 (необязательно)',
     proxyUrlHelp: 'Укажите, если доступ к API поиска нужен через прокси; иначе используются переменные HTTP_PROXY/HTTPS_PROXY.',
     apiKeyLabel: 'API-ключ',
+    baseUrlLabel: 'URL экземпляра',
+    baseUrlPlaceholder: 'https://searxng.example.com',
     apiKeyDescription: 'Введите API-ключ выбранного провайдера поиска',
     apiKeyPlaceholder: 'Введите API-ключ',
     maxResultsLabel: 'Максимум результатов',
@@ -1487,7 +1489,10 @@ export default {
       resourcesTitle: 'Доступные ресурсы',
       descriptionLabel: 'Описание',
       schemaLabel: 'Структура параметров',
-      emptyDescription: 'Сервис не предоставил инструменты или ресурсы'
+      emptyDescription: 'Сервис не предоставил инструменты или ресурсы',
+      requireApproval: 'Требуется подтверждение',
+      requireApprovalTip: 'При включении агент ждёт подтверждения перед вызовом инструмента.',
+      approvalSaveFailed: 'Не удалось сохранить настройку'
     }
   },
   error: {
@@ -1906,6 +1911,8 @@ export default {
       tabWiki: 'Wiki',
       tabGraph: 'Граф',
       searchPlaceholder: 'Поиск Wiki-страниц...',
+      searchNoResults: 'Страницы не найдены',
+      loadMore: 'Загрузить ещё (осталось {remaining})',
       filterAll: 'Все типы',
       filterSummary: 'Резюме',
       filterEntity: 'Сущности',
@@ -1928,6 +1935,12 @@ export default {
       fitView: 'По размеру экрана',
       logTitle: 'Журнал активности',
       indexTitle: 'Индекс',
+      logFeedTag: 'Лента событий',
+      logEmpty: 'Записей журнала пока нет',
+      logLoading: 'Загрузка…',
+      logLoadMore: 'Загрузить ещё',
+      indexOverviewTag: 'Каталог',
+      indexEmpty: 'Пока нет wiki-страниц. Сначала загрузите документы.',
       graphNoData: 'Нет данных графа. Сначала загрузите документы.',
       showArrows: 'Показать стрелки',
       hideArrows: 'Скрыть стрелки',
@@ -3315,6 +3328,22 @@ export default {
     supportedFormats: 'Поддерживаемые форматы'
   },
   agentStream: {
+    toolApproval: {
+      banner: 'Этот инструмент MCP требует подтверждения. Проверьте параметры.',
+      service: 'Сервис',
+      tool: 'Инструмент',
+      argsLabel: 'Аргументы',
+      argsModified: 'Изменено',
+      countdown: 'Осталось около {seconds} с',
+      approve: 'Подтвердить и выполнить',
+      reject: 'Отклонить',
+      approvedTag: 'Подтверждено',
+      rejectedTag: 'Отклонено',
+      invalidJson: 'Некорректный JSON',
+      submitted: 'Отправлено',
+      submitFailed: 'Ошибка отправки',
+      userRejected: 'Отклонено пользователем',
+    },
     tools: {
       searchKnowledge: 'Поиск по базе знаний',
       grepChunks: 'Поиск по текстовому шаблону',
@@ -3594,8 +3623,8 @@ export default {
     llmCallTimeout: {
       label: 'Таймаут вызова LLM',
       desc: 'Максимальное время ожидания одного вызова LLM (в секундах). По истечении этого времени вызов прерывается',
-      hint: '0 означает бесконечное ожидание (не рекомендуется)',
-      placeholder: 'Введите количество секунд, рекомендуемый диапазон 60-600',
+      hint: 'Оставьте пустым или 0, чтобы использовать значение по умолчанию (120 секунд)',
+      placeholder: 'Введите количество секунд, рекомендуемый диапазон 60-1800',
     },
     imageUpload: {
       navLabel: 'Мультимодальность',

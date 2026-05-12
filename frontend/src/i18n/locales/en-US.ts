@@ -824,6 +824,8 @@ export default {
     proxyUrlPlaceholder: 'e.g. http://proxy.example.com:3128 (optional; http/https only)',
     proxyUrlHelp: 'Use when outbound access to the search API requires a proxy; leave empty to rely on HTTP_PROXY/HTTPS_PROXY environment variables.',
     apiKeyLabel: 'API Key',
+    baseUrlLabel: 'Instance URL',
+    baseUrlPlaceholder: 'https://searxng.example.com',
     apiKeyDescription: 'Enter the API key for the selected search provider',
     apiKeyPlaceholder: 'Enter API key',
     maxResultsLabel: 'Maximum Results',
@@ -1684,6 +1686,8 @@ export default {
       tabWiki: 'Wiki',
       tabGraph: 'Graph',
       searchPlaceholder: 'Search wiki pages...',
+      searchNoResults: 'No matching pages found',
+      loadMore: 'Load more ({remaining} remaining)',
       filterAll: 'All Types',
       filterSummary: 'Summaries',
       filterEntity: 'Entities',
@@ -1706,6 +1710,12 @@ export default {
       fitView: 'Fit to View',
       logTitle: 'Activity Log',
       indexTitle: 'Index',
+      logFeedTag: 'Event feed',
+      logEmpty: 'No log entries yet',
+      logLoading: 'Loading…',
+      logLoadMore: 'Load more',
+      indexOverviewTag: 'Directory',
+      indexEmpty: 'No wiki pages yet. Upload documents first.',
       graphNoData: 'No graph data yet. Upload documents first.',
       showArrows: 'Show arrows',
       hideArrows: 'Hide arrows',
@@ -2403,7 +2413,11 @@ export default {
       resourcesTitle: 'Available resources',
       descriptionLabel: 'Description',
       schemaLabel: 'Parameter schema',
-      emptyDescription: 'This service did not provide tools or resources'
+      emptyDescription: 'This service did not provide tools or resources',
+      requireApproval: 'Require human approval',
+      requireApprovalTip:
+        'When enabled, the agent pauses before calling this tool until you approve — use for DB writes, deletes, etc.',
+      approvalSaveFailed: 'Failed to save approval setting'
     }
   },
   error: {
@@ -3638,6 +3652,22 @@ export default {
     supportedFormats: 'Supported formats',
   },
   agentStream: {
+    toolApproval: {
+      banner: 'This MCP tool requires human approval. Review parameters before execution.',
+      service: 'Service',
+      tool: 'Tool',
+      argsLabel: 'Arguments',
+      argsModified: 'Modified',
+      countdown: 'About {seconds}s remaining',
+      approve: 'Approve & run',
+      reject: 'Reject',
+      approvedTag: 'Approved',
+      rejectedTag: 'Rejected',
+      invalidJson: 'Arguments must be valid JSON',
+      submitted: 'Submitted',
+      submitFailed: 'Submit failed',
+      userRejected: 'User rejected',
+    },
     tools: {
       searchKnowledge: 'Knowledge Search',
       grepChunks: 'Text Pattern Search',
@@ -3917,8 +3947,8 @@ export default {
     llmCallTimeout: {
       label: "LLM Call Timeout",
       desc: "Maximum waiting time for a single LLM call (seconds). Call will be terminated if this time is exceeded",
-      hint: "0 means unlimited wait (not recommended)",
-      placeholder: "Enter seconds, recommended range 60-600",
+      hint: "Leave empty or 0 to use the default (120 seconds)",
+      placeholder: "Enter seconds, recommended range 60-1800",
     },
     imageUpload: {
       navLabel: 'Multimodal',
