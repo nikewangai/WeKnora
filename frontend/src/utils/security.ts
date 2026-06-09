@@ -14,7 +14,7 @@ const DOMPurifyConfig = {
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
     'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
     'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
-    'div', 'span', 'figure', 'figcaption', 'think',
+    'div', 'span', 'figure', 'figcaption', 'details', 'summary', 'think',
     // Mermaid SVG 支持的标签
     'svg', 'g', 'path', 'rect', 'circle', 'ellipse', 'line', 'polygon',
     'polyline', 'text', 'tspan', 'defs', 'marker', 'filter', 'use',
@@ -26,7 +26,7 @@ const DOMPurifyConfig = {
   // 允许的属性
   ALLOWED_ATTR: [
     'href', 'title', 'alt', 'src', 'class', 'id', 'style', 'data-protected-src',
-    'target', 'rel', 'width', 'height',
+    'target', 'rel', 'width', 'height', 'open',
     // Mermaid SVG 支持的属性
     'd', 'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin',
     'stroke-dasharray', 'stroke-dashoffset', 'stroke-miterlimit', 'stroke-opacity',
@@ -46,7 +46,7 @@ const DOMPurifyConfig = {
   ],
   USE_PROFILES: { html: true, svg: true, mathMl: true },
   // 允许的协议
-  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp):|(?:local|minio|cos|tos|s3|oss|ks3):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp):|(?:local|minio|cos|tos|s3|oss|ks3|obs):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
   // 禁止的标签和属性
   FORBID_TAGS: ['script', 'style', 'object', 'embed', 'form', 'input', 'button'],
   FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
@@ -124,7 +124,7 @@ function protectProviderImageSrcInHTML(html: string): string {
       .replace(/&amp;/g, '&')
       .replace(/&quot;/g, '"');
   return html.replace(
-    /<img\b([^>]*?)\ssrc=(["'])(local|minio|cos|tos|s3|oss|ks3):(?:\/\/|&#x2f;&#x2f;|&#47;&#47;)([^"']+)\2([^>]*)>/gi,
+    /<img\b([^>]*?)\ssrc=(["'])(local|minio|cos|tos|s3|oss|ks3|obs):(?:\/\/|&#x2f;&#x2f;|&#47;&#47;)([^"']+)\2([^>]*)>/gi,
     (_m, before, quote, provider, restPathRaw, after) => {
       const restPath = decodeProviderURL(restPathRaw);
       const protectedSrc = `${provider}://${restPath}`;
@@ -178,7 +178,7 @@ export function isValidURL(url: string): boolean {
   }
 
   // 允许 provider:// 形式，由前端后续鉴权拉取并替换为 blob URL
-  if (/^(local|minio|cos|tos|s3|oss|ks3):\/\/\S+$/i.test(trimmed)) {
+  if (/^(local|minio|cos|tos|s3|oss|ks3|obs):\/\/\S+$/i.test(trimmed)) {
     return true;
   }
   
@@ -266,6 +266,15 @@ export function createSafeImage(src: string, alt: string = '', title: string = '
 }
 
 const protectedFileBlobCache = new Map<string, string>();
+// Throttle retries of failed file fetches. During streaming the same markdown
+// is re-rendered on every chunk, producing brand-new <img> elements (so the
+// per-element `authHydrated` flag is reset each time). Without throttling a
+// not-yet-generated file (404) would be re-requested on every chunk. We record
+// the last failure time per URL and skip re-fetching within a cooldown window,
+// while still allowing a later attempt once the file becomes available.
+const protectedFileFailureCache = new Map<string, number>();
+const protectedFileInflight = new Set<string>();
+const PROTECTED_FILE_RETRY_COOLDOWN_MS = 5000;
 
 function getProtectedFileRequestHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -276,17 +285,14 @@ function getProtectedFileRequestHeaders(): Record<string, string> {
     }
 
     const selectedTenantId = (localStorage.getItem('weknora_selected_tenant_id') || '').trim();
-    const tenantRaw = localStorage.getItem('weknora_tenant');
     if (selectedTenantId) {
-      try {
-        const tenant = tenantRaw ? JSON.parse(tenantRaw) : null;
-        const defaultTenantId = tenant?.id ? String(tenant.id) : '';
-        if (selectedTenantId !== defaultTenantId) {
-          headers['X-Tenant-ID'] = selectedTenantId;
-        }
-      } catch {
-        // ignore tenant parse error and skip X-Tenant-ID
-      }
+      // Always attach when a selected tenant is set. Same rationale as
+      // utils/request.ts / api/chat/streame.ts: the
+      // "selectedTenantId === defaultTenantId → skip" short-circuit
+      // silently drops the header whenever any code path writes the
+      // active tenant into weknora_tenant, leaving authenticated file
+      // fetches landing on the home tenant.
+      headers['X-Tenant-ID'] = selectedTenantId;
     }
   } catch {
     // ignore localStorage read errors
@@ -298,13 +304,21 @@ function getProtectedFileRequestHeaders(): Record<string, string> {
  * 将 Markdown 里通过 /files 代理的图片，改为用带鉴权 Header 的 fetch 拉取后再显示。
  * 用于避免在 URL 中暴露 token。
  */
+/**
+ * 清除失败重试冷却记录。在流式结束等场景调用，让此前因文件尚未生成而 404
+ * 的图片可以立即重新尝试加载，而无需等待冷却窗口结束。
+ */
+export function clearProtectedFileFailureCache(): void {
+  protectedFileFailureCache.clear();
+}
+
 export async function hydrateProtectedFileImages(root: ParentNode | null | undefined): Promise<void> {
   if (!root || typeof window === 'undefined') {
     return;
   }
 
   const images = root.querySelectorAll<HTMLImageElement>(
-    'img[data-protected-src], img[src^="local://"], img[src^="minio://"], img[src^="cos://"], img[src^="tos://"], img[src^="s3://"], img[src^="oss://"], img[src^="ks3://"]',
+    'img[data-protected-src], img[src^="local://"], img[src^="minio://"], img[src^="cos://"], img[src^="tos://"], img[src^="s3://"], img[src^="oss://"], img[src^="ks3://"], img[src^="obs://"]',
   );
   if (!images.length) {
     return;
@@ -324,7 +338,7 @@ export async function hydrateProtectedFileImages(root: ParentNode | null | undef
     }
     img.dataset.authHydrated = '1';
 
-    const isProviderScheme = /^(local|minio|cos|tos|s3|oss|ks3):\/\//.test(sourceURL);
+    const isProviderScheme = /^(local|minio|cos|tos|s3|oss|ks3|obs):\/\//.test(sourceURL);
     const requestURL = isProviderScheme
       ? `/files?${new URLSearchParams({ file_path: sourceURL }).toString()}`
       : sourceURL;
@@ -340,6 +354,19 @@ export async function hydrateProtectedFileImages(root: ParentNode | null | undef
       return;
     }
 
+    // Skip while a fetch for the same URL is already in flight, or while the
+    // last attempt failed recently. Allow a fresh attempt to fix the element.
+    if (protectedFileInflight.has(requestURL)) {
+      img.dataset.authHydrated = '0';
+      return;
+    }
+    const lastFailure = protectedFileFailureCache.get(requestURL);
+    if (lastFailure !== undefined && Date.now() - lastFailure < PROTECTED_FILE_RETRY_COOLDOWN_MS) {
+      img.dataset.authHydrated = '0';
+      return;
+    }
+
+    protectedFileInflight.add(requestURL);
     try {
       const resp = await fetch(requestURL, {
         method: 'GET',
@@ -352,13 +379,17 @@ export async function hydrateProtectedFileImages(root: ParentNode | null | undef
       const blob = await resp.blob();
       const blobURL = URL.createObjectURL(blob);
       protectedFileBlobCache.set(requestURL, blobURL);
+      protectedFileFailureCache.delete(requestURL);
       img.src = blobURL;
       if (protectedSrc) {
         img.removeAttribute('data-protected-src');
       }
     } catch (error) {
       console.warn('[security] hydrateProtectedFileImages failed:', error);
+      protectedFileFailureCache.set(requestURL, Date.now());
       img.dataset.authHydrated = '0';
+    } finally {
+      protectedFileInflight.delete(requestURL);
     }
   }));
 }

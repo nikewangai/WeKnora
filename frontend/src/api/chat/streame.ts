@@ -3,6 +3,10 @@ import { ref, onUnmounted } from 'vue';
 import { generateRandomString } from '@/utils/index';
 import i18n from '@/i18n';
 import { getApiBaseUrl } from '@/utils/api-base';
+import {
+  sanitizeStreamRequestBody,
+  type StreamRequestMeta,
+} from '@/utils/chatRequestDebug';
 
 
 
@@ -23,6 +27,7 @@ export function useStream() {
   const isStreaming = ref(false)      // 流状态
   const isLoading = ref(false)        // 初始加载
   const error = ref<string | null>(null)// 错误信息
+  const lastStreamRequest = ref<StreamRequestMeta | null>(null)
   let controller = new AbortController()
 
   // 流式渲染缓冲
@@ -48,21 +53,15 @@ export function useStream() {
       return;
     }
 
-    // 获取跨租户访问请求头
+    // 跨租户访问请求头：只要 setSelectedTenant 写过激活租户，就附
+    // X-Tenant-ID。早期版本会 short-circuit "selectedTenantId ===
+    // defaultTenantId 时不附" 来减少 header 体积，但任何把 weknora_tenant
+    // 写成激活租户的代码（OIDC 同步 / UserMenu loadUserInfo / router
+    // hydrate）都会让两者相等，使得后续流式请求悄悄丢 header、落到
+    // home 租户上，导致 SSE 接口返回 404。直接附即可——后端
+    // IsTenantAccessible 也允许 header 指向自家租户。
     const selectedTenantId = localStorage.getItem('weknora_selected_tenant_id');
-    const defaultTenantId = localStorage.getItem('weknora_tenant');
-    let tenantIdHeader: string | null = null;
-    if (selectedTenantId) {
-      try {
-        const defaultTenant = defaultTenantId ? JSON.parse(defaultTenantId) : null;
-        const defaultId = defaultTenant?.id ? String(defaultTenant.id) : null;
-        if (selectedTenantId !== defaultId) {
-          tenantIdHeader = selectedTenantId;
-        }
-      } catch (e) {
-        console.error('Failed to parse tenant info', e);
-      }
-    }
+    const tenantIdHeader: string | null = selectedTenantId || null;
 
     // Validate knowledge_base_ids for agent-chat requests
     // Note: knowledge_base_ids can be empty if user hasn't selected any, but we allow it
@@ -71,11 +70,21 @@ export function useStream() {
     // Removed validation - allow empty knowledge_base_ids array
     // The backend should handle this case appropriately
 
+    // TTFB instrumentation: record the moment we kick off the request so
+    // we can compare it with the first answer chunk we receive from the
+    // server. This makes it possible to correlate the frontend-observed
+    // latency with the backend "TTFB:first_answer_chunk" log line by
+    // matching on X-Request-ID.
+    const sentAt = performance.now();
+    const requestID = generateRandomString(12);
+    let firstAnswerLogged = false;
+
     try {
       let url =
         params.method == "POST"
           ? `${apiUrl}${params.url}/${params.session_id}`
           : `${apiUrl}${params.url}/${params.session_id}?message_id=${params.query}`;
+      console.log(`[TTFB] request:start request_id=${requestID} url=${url} sent_at=${Date.now()}`);
       
       // Prepare POST body with required fields for agent-chat
       // knowledge_base_ids array and agent_enabled can update Session's SessionAgentConfig
@@ -124,6 +133,14 @@ export function useStream() {
         postBody.attachment_uploads = params.attachment_uploads;
       }
       postBody.channel = "web";
+
+      lastStreamRequest.value = {
+        requestId: requestID,
+        url,
+        method: params.method,
+        body: params.method === 'POST' ? sanitizeStreamRequestBody(postBody) : null,
+        sentAt: Date.now(),
+      };
       
       await fetchEventSource(url, {
         method: params.method,
@@ -131,7 +148,7 @@ export function useStream() {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`,
           "Accept-Language": i18n.global.locale?.value || localStorage.getItem('locale') || 'zh-CN',
-          "X-Request-ID": `${generateRandomString(12)}`,
+          "X-Request-ID": requestID,
           ...(tenantIdHeader ? { "X-Tenant-ID": tenantIdHeader } : {}),
         },
         body:
@@ -143,14 +160,23 @@ export function useStream() {
 
         onopen: async (res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          console.log(`[TTFB] response:headers request_id=${requestID} elapsed_ms=${(performance.now() - sentAt).toFixed(1)}`);
           isLoading.value = false;
         },
 
         onmessage: (ev) => {
-          buffer.push(JSON.parse(ev.data)); // 数据存入缓冲
+          const parsed = JSON.parse(ev.data);
+          // Log first answer chunk for end-to-end TTFB measurement.
+          // Filter by event type so non-answer events (references, tool
+          // calls, etc.) don't count as the "first token" arrival.
+          if (!firstAnswerLogged && (parsed?.response_type === 'answer' || parsed?.type === 'answer')) {
+            firstAnswerLogged = true;
+            console.log(`[TTFB] response:first_answer request_id=${requestID} elapsed_ms=${(performance.now() - sentAt).toFixed(1)}`);
+          }
+          buffer.push(parsed); // 数据存入缓冲
           // 执行自定义处理
           if (chunkHandler) {
-            chunkHandler(JSON.parse(ev.data));
+            chunkHandler(parsed);
           }
         },
 
@@ -191,6 +217,7 @@ export function useStream() {
     isStreaming,     // 是否在流式传输中
     isLoading,       // 初始连接状态
     error,
+    lastStreamRequest,
     onChunk,
     startStream,     // 启动流
     stopStream       // 手动停止

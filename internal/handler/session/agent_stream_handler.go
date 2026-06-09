@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +22,8 @@ type AgentStreamHandler struct {
 	sessionID          string
 	assistantMessageID string
 	requestID          string
+	receivedAt         time.Time // Handler entry timestamp, used for TTFB logging
+	ttfbLogged         bool      // Guards one-shot TTFB log on first answer chunk
 	assistantMessage   *types.Message
 	streamManager      interfaces.StreamManager
 
@@ -29,14 +32,50 @@ type AgentStreamHandler struct {
 	// State tracking
 	knowledgeRefs   []*types.SearchResult
 	finalAnswer     string
+	answerSegments  []*answerSegment     // Per-answer-event-ID accumulation, so superseded preambles can be dropped
 	eventStartTimes map[string]time.Time // Track start time for duration calculation
 	mu              sync.Mutex
+}
+
+// answerSegment accumulates the streamed content of a single final-answer event
+// ID. A non-terminal round may stream a preamble ("let me search…") under its
+// own answer ID and then be marked superseded once the round turns out to call
+// tools; tracking segments separately lets us exclude that preamble from the
+// persisted assistant message instead of leaking it into the final answer.
+type answerSegment struct {
+	id         string
+	content    string
+	superseded bool
+}
+
+// findAnswerSegment returns the segment for an answer event ID, or nil.
+// Callers must hold h.mu.
+func (h *AgentStreamHandler) findAnswerSegment(id string) *answerSegment {
+	for _, seg := range h.answerSegments {
+		if seg.id == id {
+			return seg
+		}
+	}
+	return nil
+}
+
+// composeFinalAnswer rebuilds the persisted answer from all non-superseded
+// segments in arrival order. Callers must hold h.mu.
+func (h *AgentStreamHandler) composeFinalAnswer() string {
+	var b strings.Builder
+	for _, seg := range h.answerSegments {
+		if !seg.superseded {
+			b.WriteString(seg.content)
+		}
+	}
+	return b.String()
 }
 
 // NewAgentStreamHandler creates a new handler for agent SSE streaming
 func NewAgentStreamHandler(
 	ctx context.Context,
 	sessionID, assistantMessageID, requestID string,
+	receivedAt time.Time,
 	assistantMessage *types.Message,
 	streamManager interfaces.StreamManager,
 	eventBus *event.EventBus,
@@ -46,6 +85,7 @@ func NewAgentStreamHandler(
 		sessionID:          sessionID,
 		assistantMessageID: assistantMessageID,
 		requestID:          requestID,
+		receivedAt:         receivedAt,
 		assistantMessage:   assistantMessage,
 		streamManager:      streamManager,
 		eventBus:           eventBus,
@@ -129,6 +169,20 @@ func (h *AgentStreamHandler) handleToolCall(ctx context.Context, evt event.Event
 	h.mu.Lock()
 	// Track start time for this tool call (use tool_call_id as key)
 	h.eventStartTimes[data.ToolCallID] = time.Now()
+	// Any answer text streamed before this tool call was a non-terminal round's
+	// preamble, not the final answer (the agent only ends by stopping naturally
+	// with plain text and no tool calls). Drop those segments from the persisted
+	// answer so the preamble never leaks into Message.Content.
+	supersededAny := false
+	for _, seg := range h.answerSegments {
+		if !seg.superseded && seg.content != "" {
+			seg.superseded = true
+			supersededAny = true
+		}
+	}
+	if supersededAny {
+		h.finalAnswer = h.composeFinalAnswer()
+	}
 	h.mu.Unlock()
 
 	metadata := map[string]interface{}{
@@ -342,13 +396,34 @@ func (h *AgentStreamHandler) handleFinalAnswer(ctx context.Context, evt event.Ev
 	}
 
 	h.mu.Lock()
+
 	// Track start time on first chunk
 	if _, exists := h.eventStartTimes[evt.ID]; !exists {
 		h.eventStartTimes[evt.ID] = time.Now()
 	}
 
-	// Accumulate final answer locally for assistant message (database)
-	h.finalAnswer += data.Content
+	// Emit a one-shot TTFB log the first time *any* answer chunk reaches
+	// the stream handler. This lets us compare the backend's "request in →
+	// first token out" timing against the frontend-observed TTFB and pin
+	// down where latency lives (network vs server vs LLM).
+	if !h.ttfbLogged && !h.receivedAt.IsZero() {
+		h.ttfbLogged = true
+		ttfb := time.Since(h.receivedAt)
+		logger.GetLogger(h.ctx).Infof("TTFB:first_answer_chunk request_id=%s, session_id=%s, ttfb_ms=%d",
+			h.requestID, h.sessionID, ttfb.Milliseconds())
+	}
+
+	// Accumulate final answer locally for assistant message (database). Track
+	// per event ID so a later supersede can subtract this segment's content.
+	if data.Content != "" {
+		seg := h.findAnswerSegment(evt.ID)
+		if seg == nil {
+			seg = &answerSegment{id: evt.ID}
+			h.answerSegments = append(h.answerSegments, seg)
+		}
+		seg.content += data.Content
+		h.finalAnswer = h.composeFinalAnswer()
+	}
 	if data.IsFallback {
 		h.assistantMessage.IsFallback = true
 	}

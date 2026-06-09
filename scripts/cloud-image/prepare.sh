@@ -164,7 +164,7 @@ sed -i 's/^GIN_MODE=.*/GIN_MODE=release/' .env || true
 # 把 WEKNORA_VERSION 与 WEKNORA_REF 对齐, 让 docker compose 拉取与 ref 一致的
 # 镜像 tag。无条件覆盖, 避免 .env 残留上一次 prepare 留下的旧版本号。
 # Docker Hub 上 wechatopenai/weknora-* 的 tag 实际值就是 git ref 原样
-# (`main` / `v0.5.1`), 因此这里不剥 v、也不映射到 latest。
+# (`main` / `v0.5.2`), 因此这里不剥 v、也不映射到 latest。
 WEKNORA_VERSION_VAL="${WEKNORA_REF}"
 if grep -qE '^WEKNORA_VERSION=' .env; then
   sed -i "s|^WEKNORA_VERSION=.*|WEKNORA_VERSION=${WEKNORA_VERSION_VAL}|" .env
@@ -182,7 +182,7 @@ docker compose up -d
 echo "[prepare] 4.5/6 预拉 sandbox 镜像 (Agent Skills 用, 非常驻)"
 docker compose --profile full pull sandbox || true
 
-# 其他向量库 / 可观测组件 (qdrant, milvus, weaviate, doris, neo4j, langfuse-*, minio, jaeger, dex)
+# 其他向量库 / 可观测组件 (qdrant, milvus, weaviate, doris, neo4j, langfuse-*, minio, dex)
 # 不预拉, 体积可省 5-15GB. 用户如需启用:
 #   cd /opt/WeKnora && docker compose --profile <name> up -d
 

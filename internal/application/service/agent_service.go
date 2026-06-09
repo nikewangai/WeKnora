@@ -102,14 +102,15 @@ func NewAgentService(
 	}
 }
 
-// CreateAgentEngineWithEventBus creates an agent engine with the given configuration and EventBus
+// CreateAgentEngine creates an agent engine with the given configuration and EventBus.
+// History is loaded once per turn by the caller (see service.LoadAgentHistory)
+// and handed to AgentEngine.Execute as llmContext; the engine is stateless across turns.
 func (s *agentService) CreateAgentEngine(
 	ctx context.Context,
 	config *types.AgentConfig,
 	chatModel chat.Chat,
 	rerankModel rerank.Reranker,
 	eventBus *event.EventBus,
-	contextManager interfaces.ContextManager,
 	sessionID string,
 ) (interfaces.AgentEngine, error) {
 	logger.Infof(ctx, "Creating agent engine with custom EventBus")
@@ -144,7 +145,7 @@ func (s *agentService) CreateAgentEngine(
 	// 5. Create engine
 	engine := agent.NewAgentEngine(
 		config, chatModel, toolRegistry, eventBus,
-		kbInfos, selectedDocs, contextManager, sessionID,
+		kbInfos, selectedDocs, sessionID,
 		systemPromptTemplate,
 	)
 	engine.SetAppConfig(s.cfg)
@@ -502,8 +503,7 @@ func (s *agentService) registerTools(
 	// Deduplicate while preserving original order.
 	allowedTools = dedupStrings(allowedTools)
 
-	logger.Infof(ctx, "Registering tools: %v, webSearchEnabled: %v", allowedTools, config.WebSearchEnabled)
-	allowedTools = append(allowedTools, tools.ToolFinalAnswer)
+	// logger.Infof(ctx, "Registering tools: %v, webSearchEnabled: %v", allowedTools, config.WebSearchEnabled)
 	// Register each allowed tool
 	for _, toolName := range allowedTools {
 		var toolToRegister types.Tool
@@ -557,10 +557,6 @@ func (s *agentService) registerTools(
 		case tools.ToolDataSchema:
 			toolToRegister = tools.NewDataSchemaTool(s.knowledgeService, s.chunkService.GetRepository())
 			logger.Infof(ctx, "Registered data_schema tool")
-
-		case tools.ToolFinalAnswer:
-			toolToRegister = tools.NewFinalAnswerTool()
-			logger.Infof(ctx, "Registered final_answer tool")
 
 		// Wiki tools — only registered when wiki KBs are detected
 		case tools.ToolWikiReadPage:
@@ -686,7 +682,9 @@ func (s *agentService) getKnowledgeBaseInfos(ctx context.Context, kbIDs []string
 			pageResult, err := s.knowledgeService.ListPagedKnowledgeByKnowledgeBaseID(ctx, kbID, &types.Pagination{
 				Page:     1,
 				PageSize: 10,
-			}, "", "", "")
+			}, types.KnowledgeListFilter{
+				ParseStatus: types.ParseStatusCompleted,
+			})
 
 			if err == nil && pageResult != nil {
 				docCount = int(pageResult.Total)
