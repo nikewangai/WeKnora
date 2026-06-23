@@ -20,6 +20,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/models/chat"
+	"github.com/Tencent/WeKnora/internal/ratelimit"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/google/uuid"
@@ -305,6 +306,9 @@ const (
 	RedisKeyQueueUser  = "im:queue:user:"   // + userKey   — global per-user queue counter
 	RedisKeyRateLimit  = "im:ratelimit:"    // + key       — sliding-window rate limiting
 	RedisKeyGlobalGate = "im:global:active" // global concurrent worker counter
+
+	defaultRateLimitWindow      = 60 * time.Second
+	defaultRateLimitMaxRequests = 10
 )
 
 // channelState holds runtime state for a running IM channel.
@@ -372,7 +376,8 @@ type Service struct {
 
 	// rateLimiter enforces per-user sliding window rate limiting.
 	// Uses Redis ZSET when available, falls back to local sliding window.
-	rateLimiter *distributedLimiter
+	rateLimiter  *ratelimit.Limiter
+	rateLimitMax int
 
 	// inflight tracks in-progress QA requests, keyed by userKey
 	// ("channelID:userID:chatID"). Allows /stop to abort a running request
@@ -493,8 +498,8 @@ func resolveIMConfig(appCfg *config.Config) (workers, maxQueue, maxPerUser, glob
 	workers = defaultWorkers
 	maxQueue = defaultMaxQueueSize
 	maxPerUser = defaultMaxPerUser
-	rlWindow = rateLimitWindow
-	rlMax = rateLimitMaxRequests
+	rlWindow = defaultRateLimitWindow
+	rlMax = defaultRateLimitMaxRequests
 
 	if appCfg == nil || appCfg.IM == nil {
 		return
@@ -565,7 +570,8 @@ func NewService(
 		cmdRegistry:      registry,
 		channels:         make(map[string]*channelState),
 		adapterFactories: make(map[string]AdapterFactory),
-		rateLimiter:      newDistributedLimiter(redisClient, rlWindow, rlMax, instanceID),
+		rateLimiter:      ratelimit.New(redisClient, RedisKeyRateLimit, rlWindow, instanceID),
+		rateLimitMax:     rlMax,
 		redis:            redisClient,
 		instanceID:       instanceID,
 		stopCh:           make(chan struct{}),
@@ -581,7 +587,7 @@ func NewService(
 	if redisClient == nil {
 		go s.dedupCleanupLoop()
 	}
-	go s.rateLimiter.cleanupLoop(s.stopCh)
+	go s.rateLimiter.StartCleanup(s.stopCh)
 
 	if redisClient != nil {
 		globalInfo := "unlimited"
@@ -1070,7 +1076,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg *IncomingMessage, chann
 	isCommand := s.cmdRegistry.IsRegistered(msg.Content)
 	if !isCommand {
 		rateLimitKey := makeUserKey(channelID, msg.UserID, msg.ChatID, threadID)
-		if !s.rateLimiter.Allow(rateLimitKey) {
+		if !s.rateLimiter.Allow(ctx, rateLimitKey, s.rateLimitMax) {
 			logger.Warnf(ctx, "[IM] Rate limited: channel=%s user=%s chat=%s", channelID, msg.UserID, msg.ChatID)
 			_ = adapter.SendReply(ctx, msg, &ReplyMessage{
 				Content: "您的消息发送过于频繁，请稍后再试。",
@@ -1174,6 +1180,16 @@ func (s *Service) HandleMessage(ctx context.Context, msg *IncomingMessage, chann
 		} else {
 			return fmt.Errorf("get session: %w", err)
 		}
+	}
+
+	// Title an untitled IM session from its first text message, like web chats.
+	// GenerateTitleAsync self-guards on a non-empty title and persists to the DB;
+	// nil eventBus is fine (IM has no live stream — the sidebar reloads it).
+	if session.Title == "" && strings.TrimSpace(msg.Content) != "" {
+		// Copy the session: the async title goroutine writes Title while the QA
+		// worker below shares the same *session.
+		sessionForTitle := *session
+		s.sessionService.GenerateTitleAsync(sessionCtx, &sessionForTitle, msg.Content, "", nil)
 	}
 
 	// 5. Enqueue the QA request into the bounded worker pool.
@@ -1480,8 +1496,23 @@ func shortID(id string) string {
 	return id
 }
 
+// imInitialSessionTitle picks a new IM session's starting title: "" when the
+// message has text to summarise (so it gets a content-based title later, like
+// web chats), otherwise the IM identity title so the row is never blank.
+func imInitialSessionTitle(msg *IncomingMessage, identityTitle func(*IncomingMessage) string) string {
+	if strings.TrimSpace(msg.Content) != "" {
+		return ""
+	}
+	return identityTitle(msg)
+}
+
 // resolveUserSession finds or creates a ChannelSession keyed by (platform, user_id, chat_id, tenant_id, agent_id).
 // This is the original session resolution strategy.
+//
+// Invariant: a cache miss creates a brand-new session — we never attach a second
+// mapping to an existing session. The session-list source filter (repository
+// QueryPaged) relies on this one-mapping-per-session property; if this ever
+// re-maps an existing session, that JOIN needs a one-row-per-session guard.
 func (s *Service) resolveUserSession(ctx context.Context, msg *IncomingMessage, tenantID uint64, agentID string, imChannelID string) (*ChannelSession, error) {
 	var cs ChannelSession
 	result := s.db.Where("platform = ? AND user_id = ? AND chat_id = ? AND tenant_id = ? AND agent_id = ? AND deleted_at IS NULL",
@@ -1496,8 +1527,10 @@ func (s *Service) resolveUserSession(ctx context.Context, msg *IncomingMessage, 
 		return nil, fmt.Errorf("query channel session: %w", result.Error)
 	}
 
-	// Create a new WeKnora session
-	title := buildUserSessionTitle(msg)
+	// Create a new WeKnora session. Start untitled when there's text to summarise
+	// so it gets a content-based title after the first message (see HandleMessage);
+	// fall back to the IM identity title otherwise.
+	title := imInitialSessionTitle(msg, buildUserSessionTitle)
 
 	newSession := &types.Session{
 		TenantID:    tenantID,
@@ -1568,8 +1601,9 @@ func (s *Service) resolveThreadSession(ctx context.Context, msg *IncomingMessage
 		return nil, fmt.Errorf("query thread session: %w", result.Error)
 	}
 
-	// Build a session title including chat + thread suffix for traceability.
-	title := buildThreadSessionTitle(msg)
+	// Start untitled when there's text to summarise so it gets a content-based
+	// title after the first message; fall back to the chat/thread identity title.
+	title := imInitialSessionTitle(msg, buildThreadSessionTitle)
 
 	newSession := &types.Session{
 		TenantID:    tenantID,
@@ -2214,19 +2248,25 @@ type ChannelWithAgent struct {
 // ListChannelsByTenant returns all non-deleted IM channels in the given tenant,
 // joined with custom_agents.name. Built-in agent IDs (whose rows may not exist
 // in custom_agents) produce an empty AgentName — the frontend can substitute a
-// localized "builtin agent" label in that case.
+// localized "builtin agent" label in that case. Channels whose custom agent was
+// soft-deleted are excluded so overview lists stay consistent after agent removal.
 func (s *Service) ListChannelsByTenant(tenantID uint64) ([]ChannelWithAgent, error) {
+	builtinIDs := types.GetBuiltinAgentIDs()
 	var rows []ChannelWithAgent
-	err := s.db.Table("im_channels AS c").
+	q := s.db.Table("im_channels AS c").
 		Select(`c.id, c.tenant_id, c.agent_id,
                 COALESCE(a.name, '') AS agent_name,
                 c.platform, c.name, c.enabled, c.mode, c.output_mode,
                 c.session_mode, c.bot_identity, c.created_at, c.updated_at`).
 		Joins(`LEFT JOIN custom_agents AS a
-               ON a.id = c.agent_id AND a.tenant_id = c.tenant_id`).
-		Where("c.tenant_id = ? AND c.deleted_at IS NULL", tenantID).
-		Order("c.created_at DESC").
-		Scan(&rows).Error
+               ON a.id = c.agent_id AND a.tenant_id = c.tenant_id AND a.deleted_at IS NULL`).
+		Where("c.tenant_id = ? AND c.deleted_at IS NULL", tenantID)
+	if len(builtinIDs) > 0 {
+		q = q.Where("a.id IS NOT NULL OR c.agent_id IN ?", builtinIDs)
+	} else {
+		q = q.Where("a.id IS NOT NULL")
+	}
+	err := q.Order("c.created_at DESC").Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
@@ -2267,6 +2307,25 @@ func (s *Service) UpdateChannel(channel *IMChannel) error {
 		}
 	}
 	return nil
+}
+
+// DeleteChannelsByAgent stops and soft-deletes every IM channel bound to the
+// given agent within the tenant. Used when a custom agent is removed so
+// overview lists and running adapters do not outlive the agent.
+func (s *Service) DeleteChannelsByAgent(agentID string, tenantID uint64) error {
+	var channels []IMChannel
+	if err := s.db.Where("agent_id = ? AND tenant_id = ? AND deleted_at IS NULL", agentID, tenantID).
+		Find(&channels).Error; err != nil {
+		return err
+	}
+	for i := range channels {
+		s.StopChannel(channels[i].ID)
+	}
+	if len(channels) == 0 {
+		return nil
+	}
+	return s.db.Where("agent_id = ? AND tenant_id = ? AND deleted_at IS NULL", agentID, tenantID).
+		Delete(&IMChannel{}).Error
 }
 
 // DeleteChannel soft-deletes a channel and stops it. Only deletes if the channel belongs to the given tenant.
@@ -2430,7 +2489,7 @@ func (s *Service) processFileToKnowledgeBase(ctx context.Context, msg *IncomingM
 	fh := newInMemoryFileHeader(fileName, content)
 
 	// Create knowledge entry via the knowledge service
-	knowledge, err := s.knowledgeService.CreateKnowledgeFromFile(kbCtx, kbID, fh, nil, nil, "", "", imPlatformToChannel(channel.Platform))
+	knowledge, err := s.knowledgeService.CreateKnowledgeFromFile(kbCtx, kbID, fh, nil, nil, "", "", imPlatformToChannel(channel.Platform), nil)
 	if err != nil {
 		errMsg := err.Error()
 		// Check for duplicate file
