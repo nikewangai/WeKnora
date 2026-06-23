@@ -21,6 +21,11 @@ RUN if [ -n "$APK_MIRROR_ARG" ]; then \
     apt-get update && \
     apt-get install -y git build-essential libsqlite3-dev
 
+# 放在 go install 上方
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=sum.golang.org
+
+# RUN go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest 
 # Install migrate tool
 RUN go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 
