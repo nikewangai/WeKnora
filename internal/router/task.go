@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/application/service"
+	"github.com/Tencent/WeKnora/internal/common"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/middleware/asynqdl"
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
@@ -73,6 +74,7 @@ func getAsynqRedisClientOpt() *asynq.RedisClientOpt {
 		// WriteTimeout slightly larger to absorb head-of-line stalls.
 		WriteTimeout: time.Duration(timeoutMs*2) * time.Millisecond,
 		DB:           db,
+		TLSConfig:    common.RedisTLSConfig(),
 	}
 	return opt
 }
@@ -204,6 +206,9 @@ func RunAsynqServer(params AsynqTaskParams) *asynq.ServeMux {
 
 	// Register knowledge list delete handler
 	mux.HandleFunc(types.TypeKnowledgeListDelete, params.KnowledgeService.ProcessKnowledgeListDelete)
+
+	// Register knowledge list reparse handler
+	mux.HandleFunc(types.TypeKnowledgeListReparse, params.KnowledgeService.ProcessKnowledgeListReparse)
 
 	// Register index delete handler
 	mux.HandleFunc(types.TypeIndexDelete, params.TagService.ProcessIndexDelete)
