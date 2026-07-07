@@ -7,11 +7,34 @@ web:
 staticClients:
   - id: weknora
     redirectURIs:
+      # Frontend uses window.location.origin — register every host you
+      # actually open WeKnora with (127.0.0.1 and localhost differ).
       - 'http://127.0.0.1:5173/api/v1/auth/oidc/callback'
       - 'http://127.0.0.1/api/v1/auth/oidc/callback'
+      - 'http://localhost:5173/api/v1/auth/oidc/callback'
+      - 'http://localhost/api/v1/auth/oidc/callback'
+      # WeKnora SPA OIDC (Login.vue → backend callback)
+      - 'http://172.16.42.50/api/v1/auth/oidc/callback'
+      # Java portal OIDC (business system → portal callback page)
+      - 'http://172.16.42.50/portal/weknora/oidc-callback'
     name: 'WeKnora'
-    # add a "secret" field here
+    # Dex v2.41+ requires secret on confidential clients. Match
+    # OIDC_AUTH_CLIENT_SECRET in .env when enabling OIDC login.
+    secret: weknora-dev-oidc-secret
 enablePasswordDB: true
+# Dex v2.41+ removed CLI `dex hash` / `dex create user`. Add local
+# users via staticPasswords here (memory storage) or gRPC API.
+# Generate hash: htpasswd -BinC 10 '' <<< 'your-password' | cut -d: -f2
+staticPasswords:
+  - email: test@example.com
+    username: test
+    userID: test-user-001
+    hash: "$2y$10$bUQ/muRoAZQuS6djBrU0T.OLJqOHN593mj6PqCgHlQB2UTYxUk6XC"  # password123
+  # 新增：与若依管理员邮箱完全一致
+  - email: 2856244173@qq.com
+    username: ruoyi-admin
+    userID: ruoyi-admin-001
+    hash: "$2y$10$bUQ/muRoAZQuS6djBrU0T.OLJqOHN593mj6PqCgHlQB2UTYxUk6XC"  # password123
 oauth2:
   responseTypes: 
     - code

@@ -534,13 +534,16 @@ services:
       - doris
 
   dex:
-    image: dexidp/dex:latest
+    image: ghcr.io/dexidp/dex:v2.41.1
     container_name: dex
     ports:
       - "5556:5556"
     volumes:
       - ./misc/dex-config.yaml:/etc/dex/config.yaml
     command: ["dex", "serve", "/etc/dex/config.yaml"]
+    restart: unless-stopped
+    networks:
+      - WeKnora-network
     profiles:
       - dex
       - full
