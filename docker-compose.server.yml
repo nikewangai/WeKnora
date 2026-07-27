@@ -1,0 +1,118 @@
+# 服务器部署覆盖层（推荐：固态约 100G+）
+#
+# 策略：
+#   - Postgres（含 pgvector 检索）→ Docker 默认 volume，留在固态，保证查询性能
+#   - 原文件 / MinIO / 可选向量库等大体积数据 → 机械盘 /data
+#   - ParadeDB 使用 v0.22.6+：兼容无 AVX2 的虚拟机 CPU（QEMU 2.5+ / 仅 SSE4.2）
+#     官方 compose 默认的 v0.22.2 在此类 CPU 上会 Illegal instruction (132)
+#
+# 用法（在服务器上，项目目录内）：
+#   sudo mkdir -p /data/weknora/{files,minio,qdrant,milvus,neo4j,weaviate,doris/{fe-meta,fe-log,be-storage,be-log},langfuse/{clickhouse,clickhouse-logs,minio}}
+#   cp .env.example .env          # 再按 .env.server.example 改关键项
+#   docker compose -f docker-compose.yml -f docker-compose.server.yml up -d
+#
+# 本地开发请勿使用本文件（继续用 docker-compose.dev.yml + 本机 .env）。
+
+services:
+  postgres:
+    image: paradedb/paradedb:v0.22.6-pg17
+
+  langfuse-db-init:
+    image: paradedb/paradedb:v0.22.6-pg17
+
+volumes:
+  # postgres-data：不在此覆盖 → 默认落在固态 /var/lib/docker/volumes
+
+  data-files:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/files
+
+  minio_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/minio
+
+  # 若启用独立向量库 profile，数据也放机械盘（体积大；检索会比固态慢一些）
+  qdrant_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/qdrant
+
+  milvus_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/milvus
+
+  neo4j-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/neo4j
+
+  weaviate_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/weaviate
+
+  doris_fe_meta:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/doris/fe-meta
+
+  doris_fe_log:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/doris/fe-log
+
+  doris_be_storage:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/doris/be-storage
+
+  doris_be_log:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/doris/be-log
+
+  langfuse_clickhouse_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/langfuse/clickhouse
+
+  langfuse_clickhouse_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/langfuse/clickhouse-logs
+
+  langfuse_minio_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/weknora/langfuse/minio
+
+  # redis / docreader-tmp / searxng_config → 默认 volume（固态）
