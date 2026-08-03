@@ -240,6 +240,11 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.docreader
+      args:
+        - APT_MIRROR=${APT_MIRROR:-}
+        - GITHUB_PROXY=${GITHUB_PROXY:-}
+        - PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        - UV_INDEX_URL=${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     image: wechatopenai/weknora-docreader:${WEKNORA_VERSION:-latest}
     container_name: WeKnora-docreader-dev
     ports:

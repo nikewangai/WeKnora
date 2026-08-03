@@ -66,6 +66,8 @@ packages/protoc-*.zip
 !packages/protoc-*-linux-x86_64.zip
 !packages/protoc-*-linux-aarch_64.zip
 !packages/protoc-*-linux-arm.zip
+# 允许构建时 COPY 本地 grpc_health_probe（国内 Docker 网络常访问不了 GitHub）
+!packages/grpc_health_probe-linux-*
 
 # 本地测试脚本
 configure-ollama.sh

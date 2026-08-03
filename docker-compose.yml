@@ -31,6 +31,9 @@ services:
       dockerfile: docker/Dockerfile.app
       args:
         - APK_MIRROR_ARG=${APK_MIRROR_ARG:-}
+        # 国内构建默认走 goproxy.cn，避免 proxy.golang.org 超时
+        - GOPROXY_ARG=${GOPROXY_ARG:-https://goproxy.cn,direct}
+        - GOSUMDB_ARG=${GOSUMDB_ARG:-off}
     container_name: WeKnora-app
     ports:
       - "${APP_PORT:-8080}:8080"
@@ -383,7 +386,12 @@ services:
       context: .
       dockerfile: docker/Dockerfile.docreader
       args:
-        - APT_MIRROR=${APT_MIRROR:-}
+        - APT_MIRROR=${APT_MIRROR:-http://mirrors.aliyun.com}
+        # 国内构建访问 GitHub 失败时设置，例如 https://ghfast.top/ 或 https://gh-proxy.com/
+        - GITHUB_PROXY=${GITHUB_PROXY:-}
+        # 国内构建默认走清华 PyPI，避免 uv sync 直连 pypi.org 卡数十分钟
+        - PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        - UV_INDEX_URL=${UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     container_name: WeKnora-docreader
     # docreader gRPC ships without auth/TLS and is only consumed by the app
     # container over the WeKnora-network (DOCREADER_ADDR defaults to
