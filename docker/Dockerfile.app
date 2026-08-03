@@ -27,6 +27,7 @@ ENV GOSUMDB=sum.golang.org
 
 # RUN go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest 
 # Install migrate tool
+# Install migrate tool（依赖 GOPROXY，国内需 goproxy.cn）
 RUN go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 
 # Copy go mod and sum files
