@@ -214,6 +214,14 @@ type volcengineProvider struct{ baseProvider }
 func (volcengineProvider) Name() provider.ProviderName { return provider.ProviderVolcengine }
 func (volcengineProvider) Thinking() ThinkingStrategy  { return thinkingTypeField{} }
 
+// Ark 新模型（doubao-seed-2 等）拒绝同时传 max_tokens 与 max_completion_tokens。
+// Agent 引擎会把同一 round budget 写入两个字段以兼容不同供应商；火山侧只保留后者。
+func (volcengineProvider) ShapeRequest(req *openai.ChatCompletionRequest, _ *ChatOptions, _ bool) {
+	if req != nil && req.MaxCompletionTokens > 0 {
+		req.MaxTokens = 0
+	}
+}
+
 // --- Azure OpenAI: api-key auth (reasoning variant also strips sampling params) ---
 
 type azureProvider struct{ baseProvider }

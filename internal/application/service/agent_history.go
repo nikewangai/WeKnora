@@ -123,7 +123,7 @@ func LoadAgentHistory(
 // Image captions and attachments are reconstructed from their canonical DB
 // columns so useful user-provided context is retained without stale RAG data.
 func buildUserHistoryMessage(m *types.Message) chat.Message {
-	content := m.Content
+	content := stripPortalTemplateFillNote(m.Content)
 	if captions := extractImageCaptionsFromMessage(m.Images); captions != "" {
 		content += "\n\n[用户上传图片内容]\n" + captions
 	}
@@ -131,6 +131,17 @@ func buildUserHistoryMessage(m *types.Message) chat.Message {
 		content += m.Attachments.BuildPrompt()
 	}
 	return chat.Message{Role: "user", Content: content}
+}
+
+// stripPortalTemplateFillNote removes the fill-mode instruction that the portal
+// once appended to user queries. It was stored as part of the message, so
+// reopening the session kept the model in template-fill mode.
+func stripPortalTemplateFillNote(content string) string {
+	const marker = "\n\n这是已经套好的电池信息单。"
+	if i := strings.Index(content, marker); i >= 0 {
+		return strings.TrimSpace(content[:i])
+	}
+	return content
 }
 
 // buildAssistantHistoryMessages reconstructs the assistant side of one

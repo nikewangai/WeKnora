@@ -37,6 +37,14 @@ grant_docker_sock_to_appuser() {
         return 0
     fi
     if [ "$gid" = "0" ]; then
+        # Docker Desktop / Colima 把 socket 映射成 root:root 0660，入口拒绝把
+        # appuser 加进 GID 0。容器内放宽 mode，让 appuser 能拨守护进程；
+        # 不要在 Linux 宿主机上对真实 docker 组 socket 做同样的事。
+        chmod 666 "$sock" 2>/dev/null || true
+        if gosu appuser sh -c "test -r \"$sock\" && test -w \"$sock\"" 2>/dev/null; then
+            echo "weknora: $sock is GID 0 (Docker Desktop); set mode 666 so appuser can reach the daemon" >&2
+            return 0
+        fi
         echo "weknora: $sock is not writable by appuser and owned by GID 0; Docker sandbox needs a group-writable socket with a non-root GID" >&2
         return 0
     fi

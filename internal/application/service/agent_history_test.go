@@ -28,6 +28,15 @@ func TestBuildUserHistoryMessage_IgnoresLegacyRenderedContent(t *testing.T) {
 	assert.NotContains(t, got.Content, "[augmented]")
 }
 
+func TestBuildUserHistoryMessage_StripsPortalTemplateFillNote(t *testing.T) {
+	msg := &types.Message{
+		Role:    "user",
+		Content: "把温度改成 30℃\n\n这是已经套好的电池信息单。只改单元格的值，不要重画表。",
+	}
+	got := buildUserHistoryMessage(msg)
+	assert.Equal(t, "把温度改成 30℃", got.Content)
+}
+
 func TestBuildUserHistoryMessage_FallsBackToContentWithCaptions(t *testing.T) {
 	msg := &types.Message{
 		Role:    "user",

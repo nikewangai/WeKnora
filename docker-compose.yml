@@ -41,10 +41,11 @@ services:
       - data-files:/data/files
       - docreader-tmp:/tmp/docreader:ro
       - ./config/config.yaml:/app/config/config.yaml
-      # Docker 沙箱默认关闭（见 WEKNORA_SANDBOX_DOCKER_ENABLED）。需要本机 daemon 时
-      # 同时设 true 并挂载实际 socket——这等同宿主机 root，仅私有化单机。
-      # 入口脚本会按 socket GID 把 appuser 加入对应组（compose group_add 在 gosu 后无效）。
-      # - /var/run/docker.sock:/var/run/docker.sock
+      # Docker 沙箱：WEKNORA_SANDBOX_DOCKER_ENABLED=true 时必须挂载本机 socket。
+      # 等同宿主机 root，仅私有化单机。入口脚本会按 socket GID 把 appuser 加入对应组。
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 覆盖镜像内入口，处理 Docker Desktop 把 sock 映射成 GID 0 的情况（见 scripts/docker-entrypoint.sh）
+      - ./scripts/docker-entrypoint.sh:/app/scripts/docker-entrypoint.sh:ro
       # Optional: declarative built-in models. Copy config/builtin_models.yaml.example
       # to config/builtin_models.yaml, edit it for your deployment, then
       # uncomment the line below. See docs/BUILTIN_MODELS.md.
@@ -758,7 +759,8 @@ services:
       - doris
 
   dex:
-    image: dexidp/dex:latest
+    # 走 GHCR，避免 docker.m.daocloud.io 对 docker.io/dexidp/dex 返回 403
+    image: ghcr.io/dexidp/dex:v2.41.1
     container_name: dex
     ports:
       - "5556:5556"
@@ -1010,9 +1012,12 @@ services:
         condition: service_healthy
     networks:
       - WeKnora-network
-    restart: unless-stopped
+    # 出站 MCP Server（给 Cursor 等用）。本期不用，不要挂在 full 上。
+    # 启用：配 MCP_SERVER_AUTH_TOKEN，把 MCP_PORT 改成非 8082（门户 Vite 占用），再
+    #   docker compose --profile mcp up -d mcp
+    restart: "no"
     profiles:
-      - full
+      - mcp
 
 networks:
   WeKnora-network:

@@ -354,7 +354,8 @@ services:
     restart: unless-stopped
 
   dex:
-    image: dexidp/dex:latest
+    # 走 GHCR，避免 docker.m.daocloud.io 对 docker.io/dexidp/dex 返回 403
+    image: ghcr.io/dexidp/dex:v2.41.1
     container_name: WeKnora-dex-dev
     ports:
       - "5556:5556"
